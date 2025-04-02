@@ -41,7 +41,7 @@ libwebtransport is distributed as a pure C/C++ library. To integrate it into you
 <td>
 
 ```cpp
-#include "web_transport.h"
+#include <web_transport.h>
 #include <iostream>
 
 int main() {

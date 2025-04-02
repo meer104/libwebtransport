@@ -1,0 +1,18 @@
+[submodule "third_party/abseil-cpp"]
+	path = third_party/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp
+[submodule "third_party/boringssl/src"]
+	path = third_party/boringssl/src
+	url = https://github.com/google/boringssl
+[submodule "third_party/protobuf"]
+	path = third_party/protobuf
+	url = https://github.com/protocolbuffers/protobuf
+[submodule "third_party/quiche"]
+	path = third_party/quiche
+	url = https://github.com/google/quiche
+[submodule "third_party/zlib"]
+	path = third_party/zlib
+	url = https://github.com/madler/zlib
+[submodule "third_party/googleurl"]
+	path = third_party/googleurl
+	url = https://quiche.googlesource.com/googleurl

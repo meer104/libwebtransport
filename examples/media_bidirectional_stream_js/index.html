@@ -1,0 +1,822 @@
+<html>
+<head>
+</head>
+<body>
+
+
+  <canvas id="canvas"></canvas>
+
+<script>
+/**
+ * VP8Packet represents the VP8 header that is stored in the payload of an RTP Packet
+ */
+ class VP8Packet {
+  constructor() {
+    // Required Header
+    this.x_ = 0;     // extended control bits present
+    this.n_ = 0;     // when set to 1 this frame can be discarded
+    this.s_ = 0;     // start of VP8 partition
+    this.pid_ = 0;   // partition index
+
+    // Extended control bits
+    this.i_ = 0;     // 1 if PictureID is present
+    this.l_ = 0;     // 1 if TL0PICIDX is present
+    this.t_ = 0;     // 1 if TID is present
+    this.k_ = 0;     // 1 if KEYIDX is present
+
+    // Optional extension
+    this.picture_id_ = 0;  // 8 or 16 bits, picture ID
+    this.tl0pic_idx_ = 0;  // 8 bits temporal level zero index
+    this.tid_ = 0;         // 2 bits temporal layer index
+    this.y_ = 0;           // 1 bit layer sync bit
+    this.key_idx_ = 0;     // 5 bits temporal key frame index
+  }
+
+  /**
+   * Parses the passed byte array and stores the result in the VP8Packet
+   * @param {Uint8Array} payload - The payload to parse
+   * @param {Uint8Array} outputPayload - Output buffer to store the actual payload
+   * @param {Object} [outputInfo] - Optional object to store additional info like payload length
+   * @returns {number} - Error code (0 = success)
+   */
+  unmarshal(payload, outputPayload, outputInfo) {
+    const VP8_PACKET_OK = 0;
+    const VP8_PACKET_ERROR_NIL_PACKET = 1;
+    const VP8_PACKET_ERROR_SHORT_PACKET = 2;
+
+    if (!payload || payload.length === 0) {
+      return VP8_PACKET_ERROR_NIL_PACKET;
+    }
+
+    let payloadIndex = 0;
+
+    if (payloadIndex >= payload.length) {
+      return VP8_PACKET_ERROR_SHORT_PACKET;
+    }
+
+    // Parse first byte
+    this.x_ = (payload[payloadIndex] & 0x80) >> 7;
+    this.n_ = (payload[payloadIndex] & 0x20) >> 5;
+    this.s_ = (payload[payloadIndex] & 0x10) >> 4;
+    this.pid_ = payload[payloadIndex] & 0x07;
+
+    payloadIndex++;
+
+    // Parse X byte if present
+    if (this.x_ === 1) {
+      if (payloadIndex >= payload.length) {
+        return VP8_PACKET_ERROR_SHORT_PACKET;
+      }
+      this.i_ = (payload[payloadIndex] & 0x80) >> 7;
+      this.l_ = (payload[payloadIndex] & 0x40) >> 6;
+      this.t_ = (payload[payloadIndex] & 0x20) >> 5;
+      this.k_ = (payload[payloadIndex] & 0x10) >> 4;
+      payloadIndex++;
+    } else {
+      this.i_ = 0;
+      this.l_ = 0;
+      this.t_ = 0;
+      this.k_ = 0;
+    }
+
+    // Parse PictureID if present
+    if (this.i_ === 1) {
+      if (payloadIndex >= payload.length) {
+        return VP8_PACKET_ERROR_SHORT_PACKET;
+      }
+      if (payload[payloadIndex] & 0x80) {  // M == 1, PID is 16bit
+        if (payloadIndex + 1 >= payload.length) {
+          return VP8_PACKET_ERROR_SHORT_PACKET;
+        }
+        this.picture_id_ = ((payload[payloadIndex] & 0x7F) << 8) | payload[payloadIndex + 1];
+        payloadIndex += 2;
+      } else {
+        this.picture_id_ = payload[payloadIndex];
+        payloadIndex++;
+      }
+    } else {
+      this.picture_id_ = 0;
+    }
+
+    // Parse TL0PICIDX if present
+    if (this.l_ === 1) {
+      if (payloadIndex >= payload.length) {
+        return VP8_PACKET_ERROR_SHORT_PACKET;
+      }
+      this.tl0pic_idx_ = payload[payloadIndex];
+      payloadIndex++;
+    } else {
+      this.tl0pic_idx_ = 0;
+    }
+
+    // Parse TID/KEYIDX if present
+    if (this.t_ === 1 || this.k_ === 1) {
+      if (payloadIndex >= payload.length) {
+        return VP8_PACKET_ERROR_SHORT_PACKET;
+      }
+      if (this.t_ === 1) {
+        this.tid_ = payload[payloadIndex] >> 6;
+        this.y_ = (payload[payloadIndex] >> 5) & 0x1;
+      } else {
+        this.tid_ = 0;
+        this.y_ = 0;
+      }
+      if (this.k_ === 1) {
+        this.key_idx_ = payload[payloadIndex] & 0x1F;
+      } else {
+        this.key_idx_ = 0;
+      }
+      payloadIndex++;
+    } else {
+      this.tid_ = 0;
+      this.y_ = 0;
+      this.key_idx_ = 0;
+    }
+
+    // Set the output payload
+    if (outputPayload) {
+      const actualPayloadSize = payload.length - payloadIndex;
+      for (let i = 0; i < actualPayloadSize; i++) {
+        outputPayload[i] = payload[payloadIndex + i];
+      }
+      
+      // Store the actual payload size
+      if (outputInfo && typeof outputInfo === 'object') {
+        outputInfo.length = actualPayloadSize;
+      }
+    }
+
+    return VP8_PACKET_OK;
+  }
+
+  /**
+   * Checks whether if this is a head of the VP8 partition
+   * @param {Uint8Array} payload - The payload to check
+   * @returns {boolean} - True if this is a partition head
+   */
+  static isPartitionHead(payload) {
+    if (!payload || payload.length < 1) {
+      return false;
+    }
+    
+    return (payload[0] & 0x10) !== 0;
+  }
+
+  // Getter methods
+  X() { return this.x_; }
+  N() { return this.n_; }
+  S() { return this.s_; }
+  PID() { return this.pid_; }
+  I() { return this.i_; }
+  L() { return this.l_; }
+  T() { return this.t_; }
+  K() { return this.k_; }
+  PictureID() { return this.picture_id_; }
+  TL0PICIDX() { return this.tl0pic_idx_; }
+  TID() { return this.tid_; }
+  Y() { return this.y_; }
+  KEYIDX() { return this.key_idx_; }
+}
+
+/**
+ * VP8Depacketizer depacketizes a VP8 RTP payload
+ */
+class VP8Depacketizer {
+  constructor() {
+    this.packet_ = new VP8Packet();
+  }
+
+  /**
+   * Parses the RTP payload and returns VP8 media
+   * @param {Uint8Array} packet - The packet to parse
+   * @param {Uint8Array} payload - Output buffer to store the payload
+   * @returns {boolean} - True if successful
+   */
+  unmarshal(packet, payload) {
+    if (!packet || packet.length === 0 || !payload) {
+      return false;
+    }
+    
+    const err = this.packet_.unmarshal(packet, payload);
+    if (err !== 0) { // VP8_PACKET_OK = 0
+      return false;
+    }
+    
+    return true;
+  }
+
+  /**
+   * Checks if the packet is at the beginning of a partition
+   * @param {Uint8Array} payload - The payload to check
+   * @returns {boolean} - True if this is a partition head
+   */
+  isPartitionHead(payload) {
+    return VP8Packet.isPartitionHead(payload);
+  }
+
+  /**
+   * Checks if the packet is at the end of a partition
+   * @param {boolean} marker - The RTP marker bit
+   * @returns {boolean} - True if this is a partition tail
+   */
+  isPartitionTail(marker) {
+    // For VP8, the marker bit indicates the last packet of a frame
+    // So we just return the marker value directly
+    return marker;
+  }
+
+  /**
+   * Returns current picture ID of the parsed packet
+   * @returns {number} - The picture ID
+   */
+  getPictureID() {
+    return this.packet_.PictureID();
+  }
+
+  /**
+   * Returns whether the latest parsed packet is a keyframe
+   * @returns {boolean} - True if the packet is a keyframe
+   */
+  isKeyFrame() {
+    // In VP8, S bit must be 1 for the first packet of a frame
+    // and partition ID (PID) should be 0 for a keyframe's first partition
+    return this.packet_.S() === 1 && this.packet_.PID() === 0;
+  }
+}
+
+/**
+ * VP8Payloader is responsible for creating VP8 RTP packets from a VP8 frame
+ */
+class VP8Payloader {
+  constructor() {
+    this.enable_picture_id_ = false;
+    this.picture_id_ = 0;
+    this.VP8_HEADER_SIZE = 1;
+  }
+
+  /**
+   * Enables or disables the picture ID field in the VP8 RTP packets
+   * @param {boolean} enable - Whether to enable picture ID
+   */
+  enablePictureID(enable) {
+    this.enable_picture_id_ = enable;
+  }
+
+  /**
+   * Gets the current picture ID value
+   * @returns {number} - The current picture ID
+   */
+  getPictureID() {
+    return this.picture_id_;
+  }
+
+  /**
+   * Sets the initial picture ID value
+   * @param {number} id - The picture ID to set
+   */
+  setPictureID(id) {
+    this.picture_id_ = id & 0x7FFF;  // Ensure it fits in 15 bits
+  }
+
+  /**
+   * Fragments a VP8 packet across one or more byte arrays
+   * @param {number} mtu - The maximum size each fragment can have
+   * @param {Uint8Array} payload - The payload to fragment
+   * @returns {Array<Uint8Array>} - The fragmented payload
+   */
+  payload(mtu, payload) {
+    /*
+     * https://tools.ietf.org/html/rfc7741#section-4.2
+     *
+     *       0 1 2 3 4 5 6 7
+     *      +-+-+-+-+-+-+-+-+
+     *      |X|R|N|S|R| PID | (REQUIRED)
+     *      +-+-+-+-+-+-+-+-+
+     * X:   |I|L|T|K| RSV   | (OPTIONAL)
+     *      +-+-+-+-+-+-+-+-+
+     * I:   |M| PictureID   | (OPTIONAL)
+     *      +-+-+-+-+-+-+-+-+
+     * L:   |   TL0PICIDX   | (OPTIONAL)
+     *      +-+-+-+-+-+-+-+-+
+     * T/K: |TID|Y| KEYIDX  | (OPTIONAL)
+     *      +-+-+-+-+-+-+-+-+
+     *  S: Start of VP8 partition.  SHOULD be set to 1 when the first payload
+     *     octet of the RTP packet is the beginning of a new VP8 partition,
+     *     and MUST NOT be 1 otherwise.  The S bit MUST be set to 1 for the
+     *     first packet of each encoded frame.
+     */
+
+    const payloads = [];
+    
+    if (!payload || payload.length === 0) {
+      return payloads;
+    }
+
+    let usingHeaderSize = this.VP8_HEADER_SIZE;
+    if (this.enable_picture_id_) {
+      if (this.picture_id_ === 0) {
+        // No additional bytes needed if picture_id is 0
+      } else if (this.picture_id_ < 128) {
+        usingHeaderSize = this.VP8_HEADER_SIZE + 2;
+      } else {
+        usingHeaderSize = this.VP8_HEADER_SIZE + 3;
+      }
+    }
+
+    const maxFragmentSize = mtu - usingHeaderSize;
+    
+    // Check if the maximum fragment size is valid
+    if (maxFragmentSize <= 0) {
+      return payloads;
+    }
+    
+    let payloadRemaining = payload.length;
+    let payloadIndex = 0;
+    let first = true;
+    
+    while (payloadRemaining > 0) {
+      const currentFragmentSize = Math.min(maxFragmentSize, payloadRemaining);
+      const out = new Uint8Array(usingHeaderSize + currentFragmentSize);
+      
+      // Setup basic header byte
+      if (first) {
+        out[0] = 0x10;  // Set S bit to 1 for first packet
+        first = false;
+      } else {
+        out[0] = 0x00;  // No special flags for continuation packets
+      }
+      
+      // Add picture ID if enabled
+      if (this.enable_picture_id_) {
+        switch (usingHeaderSize) {
+          case this.VP8_HEADER_SIZE:
+            // No picture ID field
+            break;
+          case this.VP8_HEADER_SIZE + 2:
+            out[0] |= 0x80;  // Set X bit
+            out[1] = 0x80;   // Set I bit
+            out[2] = this.picture_id_ & 0x7F;
+            break;
+          case this.VP8_HEADER_SIZE + 3:
+            out[0] |= 0x80;  // Set X bit
+            out[1] = 0x80;   // Set I bit
+            out[2] = 0x80 | ((this.picture_id_ >> 8) & 0x7F);
+            out[3] = this.picture_id_ & 0xFF;
+            break;
+        }
+      }
+      
+      // Copy payload fragment
+      for (let i = 0; i < currentFragmentSize; i++) {
+        out[usingHeaderSize + i] = payload[payloadIndex + i];
+      }
+      
+      payloads.push(out);
+      
+      payloadRemaining -= currentFragmentSize;
+      payloadIndex += currentFragmentSize;
+    }
+    
+    // Increment picture ID for next frame, wrapping at 0x7FFF
+    this.picture_id_ = (this.picture_id_ + 1) & 0x7FFF;
+    
+    return payloads;
+  }
+}
+
+/**
+ * RTPPacket represents an RTP packet as defined in RFC 3550
+ */
+class RTPPacket {
+  constructor() {
+    // Header fields
+    this.version_ = 0;            // 2 bits
+    this.padding_ = false;        // 1 bit
+    this.extension_ = false;      // 1 bit
+    this.csrc_count_ = 0;         // 4 bits
+    this.marker_ = false;         // 1 bit
+    this.payload_type_ = 0;       // 7 bits
+    this.sequence_number_ = 0;    // 16 bits
+    this.timestamp_ = 0;          // 32 bits
+    this.ssrc_ = 0;               // 32 bits
+    
+    // CSRC list (Contributing sources)
+    this.csrcs_ = [];
+    
+    // Extension header
+    this.extension_header_id_ = 0;
+    this.extension_length_ = 0;
+    this.extension_value_ = null;
+    
+    // Padding
+    this.padding_size_ = 0;
+    
+    // Payload
+    this.payload_ = null;
+    this.payload_size_ = 0;
+  }
+
+  /**
+   * Clean up resources
+   */
+  dispose() {
+    this.extension_value_ = null;
+    this.payload_ = null;
+  }
+
+  /**
+   * Parses the passed byte array and stores the result in the RTPPacket
+   * @param {Uint8Array} buffer - The buffer to parse
+   * @returns {boolean} - True if successful
+   */
+  unmarshal(buffer) {
+    // Clean up any existing data
+    this.extension_value_ = null;
+    this.payload_ = null;
+    this.payload_size_ = 0;
+
+    // Check minimum packet size (RTP header is at least 12 bytes)
+    if (!buffer || buffer.length < 12) {
+      return false;
+    }
+
+    // Parse header fields
+    this.version_ = (buffer[0] >> 6) & 0x03;
+    this.padding_ = ((buffer[0] >> 5) & 0x01) !== 0;
+    this.extension_ = ((buffer[0] >> 4) & 0x01) !== 0;
+    this.csrc_count_ = buffer[0] & 0x0F;
+    
+    this.marker_ = ((buffer[1] >> 7) & 0x01) !== 0;
+    this.payload_type_ = buffer[1] & 0x7F;
+    
+    this.sequence_number_ = (buffer[2] << 8) | buffer[3];
+    
+    this.timestamp_ = (buffer[4] << 24) |
+                     (buffer[5] << 16) |
+                     (buffer[6] << 8) |
+                     buffer[7];
+    
+    this.ssrc_ = (buffer[8] << 24) |
+                (buffer[9] << 16) |
+                (buffer[10] << 8) |
+                buffer[11];
+
+    // Validate that the packet is large enough to contain the CSRC list
+    let headerSize = 12 + (this.csrc_count_ * 4);
+    if (buffer.length < headerSize) {
+      return false;
+    }
+
+    // Extract CSRC list
+    this.csrcs_ = [];
+    for (let i = 0; i < this.csrc_count_; i++) {
+      const csrc = (buffer[12 + (i * 4)] << 24) |
+                  (buffer[13 + (i * 4)] << 16) |
+                  (buffer[14 + (i * 4)] << 8) |
+                  buffer[15 + (i * 4)];
+      this.csrcs_.push(csrc);
+    }
+
+    // Handle header extension if present
+    if (this.extension_) {
+      // Check if packet is large enough to contain the extension header
+      if (buffer.length < headerSize + 4) {
+        return false;
+      }
+
+      this.extension_header_id_ = (buffer[headerSize] << 8) | 
+                                 buffer[headerSize + 1];
+      
+      this.extension_length_ = (buffer[headerSize + 2] << 8) | 
+                              buffer[headerSize + 3];
+      
+      // Extension length is in 32-bit (4-byte) words
+      const extensionSize = this.extension_length_ * 4;
+      
+      // Check if packet is large enough to contain the extension data
+      if (buffer.length < headerSize + 4 + extensionSize) {
+        return false;
+      }
+
+      // Store extension value
+      this.extension_value_ = new Uint8Array(extensionSize);
+      for (let i = 0; i < extensionSize; i++) {
+        this.extension_value_[i] = buffer[headerSize + 4 + i];
+      }
+      
+      // Update header size to include extension
+      headerSize += 4 + extensionSize;
+    }
+
+    // Calculate payload size considering padding
+    let payloadSize = buffer.length - headerSize;
+    
+    if (this.padding_ && payloadSize > 0) {
+      this.padding_size_ = buffer[buffer.length - 1];
+      
+      // Validate padding size
+      if (this.padding_size_ === 0 || this.padding_size_ > payloadSize) {
+        return false;
+      }
+      
+      payloadSize -= this.padding_size_;
+    } else {
+      this.padding_size_ = 0;
+    }
+
+    // Extract payload
+    if (payloadSize > 0) {
+      this.payload_ = new Uint8Array(payloadSize);
+      for (let i = 0; i < payloadSize; i++) {
+        this.payload_[i] = buffer[headerSize + i];
+      }
+      this.payload_size_ = payloadSize;
+    }
+
+    return true;
+  }
+
+  // Getter methods
+  getPayload() { return this.payload_; }
+  getPayloadSize() { return this.payload_size_; }
+  getSequenceNumber() { return this.sequence_number_; }
+  getTimestamp() { return this.timestamp_; }
+  getSSRC() { return this.ssrc_; }
+  getPayloadType() { return this.payload_type_; }
+  getMarker() { return this.marker_; }
+  getVersion() { return this.version_; }
+  getPadding() { return this.padding_; }
+  getExtension() { return this.extension_; }
+  getCSRCCount() { return this.csrc_count_; }
+  getExtensionHeaderID() { return this.extension_header_id_; }
+  getExtensionLength() { return this.extension_length_; }
+  getExtensionHeaderValue() { return this.extension_value_; }
+}
+
+/**
+ * Improved VP8Depacketizer that correctly handles extracting the VP8 payload
+ */
+class VP8DepacketizerFixed extends VP8Depacketizer {
+  constructor() {
+    super();
+    this.payloadSize = 0; // Track the actual payload size
+  }
+
+  /**
+   * Parses the RTP payload and returns VP8 media
+   * @param {Uint8Array} packet - The packet to parse
+   * @param {Object} outputPayload - Output container with data and size properties
+   * @returns {boolean} - True if successful
+   */
+  unmarshal(packet, outputPayload) {
+    if (!packet || packet.length === 0 || !outputPayload || !outputPayload.data) {
+      return false;
+    }
+    
+    // Create a temporary buffer for the output and an object to track size
+    const tempOutput = new Uint8Array(packet.length);
+    const sizeInfo = { length: 0 };
+    
+    // Extract VP8 payload using the parent packet
+    const err = this.packet_.unmarshal(packet, tempOutput, sizeInfo);
+    if (err !== 0) { // VP8_PACKET_OK = 0
+      return false;
+    }
+    
+    // Get the actual payload size
+    const actualSize = sizeInfo.length;
+    
+    // Copy the data to the output container
+    for (let i = 0; i < actualSize; i++) {
+      outputPayload.data[i] = tempOutput[i];
+    }
+    
+    // Set the size in the output container
+    outputPayload.size = actualSize;
+    this.payloadSize = actualSize;
+    
+    return true;
+  }
+  
+  /**
+   * Override the isKeyFrame method to ensure correct keyframe detection
+   */
+  isKeyFrame() {
+    // Check if it's the start of a VP8 partition (S bit = 1)
+    // and it's partition ID is 0 (first partition of keyframe)
+    // Additionally, check payload for VP8 keyframe pattern
+    const keyframeBySBit = this.packet_.S() === 1 && this.packet_.PID() === 0;
+    
+    // For more robust keyframe detection, we could also check for VP8 keyframe pattern
+    // in the payload (first byte of actual VP8 data), but we'll stick with the RTP header check
+    
+    return keyframeBySBit;
+  }
+}
+
+
+// JavaScript version of the Frame class
+class Frame {
+  /**
+   * @param {number} type - Frame type (e.g., 0 for RTP).
+   * @param {number|bigint} timestamp - Timestamp (in ms since epoch).
+   * @param {Uint8Array} data - The payload data.
+   */
+  constructor(type, timestamp, data) {
+    this.type = type; // expect a number (0 for RTP, etc.)
+    // Use BigInt for 64-bit timestamp. If timestamp is given as a number, convert it.
+    this.timestamp = typeof timestamp === 'bigint' ? timestamp : BigInt(timestamp);
+    this.data = data; // Uint8Array
+  }
+
+  /**
+   * Serializes the frame into a Uint8Array.
+   * Format: [Type (1 byte)] + [Timestamp (8 bytes, big-endian)] +
+   * [Data Size (4 bytes, big-endian)] + [Data]
+   */
+  serialize() {
+    const headerLength = 1 + 8 + 4;
+    const totalLength = headerLength + this.data.byteLength;
+    const buffer = new ArrayBuffer(totalLength);
+    const view = new DataView(buffer);
+    let offset = 0;
+
+    // Write type (1 byte)
+    view.setUint8(offset, this.type);
+    offset += 1;
+
+    // Write timestamp (8 bytes, big-endian)
+    if (typeof view.setBigUint64 === 'function') {
+      view.setBigUint64(offset, this.timestamp, false); // false => big-endian
+    } else {
+      // Fallback: manual conversion if setBigUint64 is not available
+      let ts = this.timestamp;
+      for (let i = 7; i >= 0; i--) {
+        view.setUint8(offset + i, Number(ts & 0xFFn));
+        ts = ts >> 8n;
+      }
+    }
+    offset += 8;
+
+    // Write data size (4 bytes, big-endian)
+    view.setUint32(offset, this.data.byteLength, false);
+    offset += 4;
+
+    // Write data payload
+    const uint8Buffer = new Uint8Array(buffer);
+    uint8Buffer.set(this.data, offset);
+
+    return uint8Buffer;
+  }
+
+  /**
+   * Deserializes a Uint8Array (or ArrayBuffer) into a Frame instance.
+   * Expects the same layout as produced by serialize().
+   * @param {Uint8Array} buffer 
+   * @returns {Frame}
+   */
+  static deserialize(buffer) {
+    if (buffer.byteLength < 13) { // minimum header size
+      throw new Error("Buffer too small to be a valid frame");
+    }
+    const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+    let offset = 0;
+
+    // Read type (1 byte)
+    const type = view.getUint8(offset);
+    offset += 1;
+
+    // Read timestamp (8 bytes, big-endian)
+    let timestamp;
+    if (typeof view.getBigUint64 === 'function') {
+      timestamp = view.getBigUint64(offset, false);
+    } else {
+      timestamp = 0n;
+      for (let i = 0; i < 8; i++) {
+        timestamp = (timestamp << 8n) | BigInt(view.getUint8(offset + i));
+      }
+    }
+    offset += 8;
+
+    // Read data size (4 bytes, big-endian)
+    const size = view.getUint32(offset, false);
+    offset += 4;
+
+    // Ensure we have the full payload
+    if (buffer.byteLength < offset + size) {
+      throw new Error("Incomplete frame payload");
+    }
+    const data = buffer.slice(offset, offset + size);
+    return new Frame(type, timestamp, data);
+  }
+}
+
+async function runWebTransportClient() {
+  const url = "https://opengit.ai/stream";
+  const transport = new WebTransport(url);
+  await transport.ready;
+  console.log("WebTransport connection is ready.");
+
+  const bidiStream = await transport.createBidirectionalStream();
+  const reader = bidiStream.readable.getReader();
+
+  let pendingBuffer = new Uint8Array(0);
+  let vp8FrameBuffer = [];
+  let videoDecoder = null;
+
+  // Initialize VideoDecoder
+  function initVideoDecoder() {
+    const canvas = document.getElementById('canvas');
+        canvas.width = 1024;
+        canvas.height = 768;
+
+
+    videoDecoder = new VideoDecoder({
+      output: (videoFrame) => {
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        console.log(canvas.width, canvas.height);
+        ctx.drawImage(videoFrame, 0, 0, canvas.width, canvas.height);
+        videoFrame.close();
+      },
+      error: (e) => console.error("VideoDecoder error:", e)
+    });
+    videoDecoder.configure({ codec: 'vp8', optimizeForLatency: true });
+    // hardwareAcceleration: "prefer-hardware"
+  }
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value) {
+      const combined = new Uint8Array([...pendingBuffer, ...value]);
+      let offset = 0;
+
+      while (offset <= combined.length - 13) {
+        const headerView = new DataView(combined.buffer, offset, 13);
+        const dataSize = headerView.getUint32(9, false);
+        const frameEnd = offset + 13 + dataSize;
+        if (frameEnd > combined.length) break;
+
+        const frameBytes = combined.slice(offset, frameEnd);
+        try {
+          const frame = Frame.deserialize(frameBytes);
+          const rtpPacket = new RTPPacket();
+          if (!rtpPacket.unmarshal(frame.data)) {
+            console.error("Failed to parse RTP packet");
+            offset = frameEnd;
+            continue;
+          }
+
+          const depacketizer = new VP8DepacketizerFixed();
+          const output = { data: new Uint8Array(rtpPacket.getPayload().length), size: 0 };
+          if (!depacketizer.unmarshal(rtpPacket.getPayload(), output)) {
+            console.error("Failed to depacketize VP8");
+            offset = frameEnd;
+            continue;
+          }
+
+          const vp8Data = output.data.subarray(0, output.size);
+          vp8FrameBuffer.push(vp8Data);
+
+          if (rtpPacket.getMarker()) {
+            const fullFrame = new Uint8Array(vp8FrameBuffer.reduce((a, b) => a + b.length, 0));
+            let pos = 0;
+            vp8FrameBuffer.forEach(chunk => { fullFrame.set(chunk, pos); pos += chunk.length; });
+            vp8FrameBuffer = [];
+
+            // Check for keyframe to set canvas dimensions
+            if (depacketizer.isKeyFrame() && fullFrame.length >= 10 &&
+                fullFrame[0] === 0x9D && fullFrame[1] === 0x01 && fullFrame[2] === 0x2A) {
+              const width = (fullFrame[3] | (fullFrame[4] << 8)) & 0x3FFF;
+              const height = (fullFrame[5] | (fullFrame[6] << 8)) & 0x3FFF;
+              const canvas = document.getElementById('canvas');
+              canvas.width = width;
+              canvas.height = height;
+              console.log(canvas.width, canvas.height);
+            }
+
+            if (!videoDecoder) initVideoDecoder();
+
+            const timestamp = (rtpPacket.getTimestamp() * 1000) / 90; // Convert to microseconds
+            const chunk = new EncodedVideoChunk({
+              type: 'key',
+              timestamp: performance.now(),
+              data: fullFrame
+            });
+            videoDecoder.decode(chunk);
+          }
+        } catch (err) {
+          console.error("Frame processing error:", err);
+        }
+        offset = frameEnd;
+      }
+      pendingBuffer = combined.slice(offset);
+    }
+  }
+}
+
+runWebTransportClient().catch(console.error);
+</script>
+</body>
+</html>

@@ -1,0 +1,1313 @@
+<html>
+<head>
+</head>
+<body>
+
+
+<canvas id="videoCanvas" width="640" height="480"></canvas>
+
+<button id="status" >status</button>
+<button id="connectButton" >connectButton</button>
+<button id="serverUrl" >serverUrl</button>
+
+
+
+<script>
+// Constants for H264 NALU types and bitmasks
+const NALU_TYPE_BITMASK = 0x1F;
+const NALU_REF_IDC_BITMASK = 0x60;
+const FU_START_BITMASK = 0x80;
+const FU_END_BITMASK = 0x40;
+
+const STAPA_NALU_TYPE = 24;
+const FUA_NALU_TYPE = 28;
+const FUB_NALU_TYPE = 29;
+const SPS_NALU_TYPE = 7;
+const PPS_NALU_TYPE = 8;
+const AUD_NALU_TYPE = 9;
+const FILLER_NALU_TYPE = 12;
+
+const FUA_HEADER_SIZE = 2;
+const STAPA_HEADER_SIZE = 1;
+const STAPA_NALU_LENGTH_SIZE = 2;
+
+// H264 packet error codes
+const H264_PACKET_OK = 0;
+const H264_PACKET_ERROR_NIL_PACKET = 1;
+const H264_PACKET_ERROR_SHORT_PACKET = 2;
+const H264_PACKET_ERROR_UNHANDLED_NALU_TYPE = 3;
+
+// NALU start codes
+const ANNEXB_NALU_START_CODE = new Uint8Array([0x00, 0x00, 0x00, 0x01]);
+const NALU_START_CODE = new Uint8Array([0x00, 0x00, 0x01]);
+
+/**
+ * RTPPacket represents an RTP packet as defined in RFC 3550
+ */
+class RTPPacket {
+  constructor() {
+    this.version_ = 0;
+    this.padding_ = false;
+    this.extension_ = false;
+    this.csrc_count_ = 0;
+    this.marker_ = false;
+    this.payload_type_ = 0;
+    this.sequence_number_ = 0;
+    this.timestamp_ = 0;
+    this.ssrc_ = 0;
+    this.extension_header_id_ = 0;
+    this.extension_length_ = 0;
+    this.extension_value_ = null;
+    this.padding_size_ = 0;
+    this.payload_ = null;
+    this.payload_size_ = 0;
+    this.csrcs_ = [];
+  }
+
+  /**
+   * Unmarshal parses the passed byte array and stores the result in the RTPPacket
+   * @param {Uint8Array} buffer - The RTP packet buffer
+   * @returns {boolean} - Success or failure
+   */
+  unmarshal(buffer) {
+    // Clean up any existing data
+    this.extension_value_ = null;
+    this.payload_ = null;
+    this.payload_size_ = 0;
+
+    // Check minimum packet size (RTP header is at least 12 bytes)
+    if (buffer.length < 12) {
+      return false;
+    }
+
+    // Parse header fields
+    this.version_ = (buffer[0] >> 6) & 0x03;
+    this.padding_ = ((buffer[0] >> 5) & 0x01) !== 0;
+    this.extension_ = ((buffer[0] >> 4) & 0x01) !== 0;
+    this.csrc_count_ = buffer[0] & 0x0F;
+    
+    this.marker_ = ((buffer[1] >> 7) & 0x01) !== 0;
+    this.payload_type_ = buffer[1] & 0x7F;
+    
+    this.sequence_number_ = (buffer[2] << 8) | buffer[3];
+    
+    this.timestamp_ = (buffer[4] << 24) |
+                     (buffer[5] << 16) |
+                     (buffer[6] << 8) |
+                     buffer[7];
+    
+    this.ssrc_ = (buffer[8] << 24) |
+                (buffer[9] << 16) |
+                (buffer[10] << 8) |
+                buffer[11];
+
+    // Validate that the packet is large enough to contain the CSRC list
+    let headerSize = 12 + (this.csrc_count_ * 4);
+    if (buffer.length < headerSize) {
+      return false;
+    }
+
+    // Extract CSRC list
+    this.csrcs_ = [];
+    for (let i = 0; i < this.csrc_count_; i++) {
+      const csrc = (buffer[12 + (i * 4)] << 24) |
+                  (buffer[13 + (i * 4)] << 16) |
+                  (buffer[14 + (i * 4)] << 8) |
+                  buffer[15 + (i * 4)];
+      this.csrcs_.push(csrc);
+    }
+
+    // Handle header extension if present
+    if (this.extension_) {
+      // Check if packet is large enough to contain the extension header
+      if (buffer.length < headerSize + 4) {
+        return false;
+      }
+
+      this.extension_header_id_ = (buffer[headerSize] << 8) | 
+                                 buffer[headerSize + 1];
+      
+      this.extension_length_ = (buffer[headerSize + 2] << 8) | 
+                              buffer[headerSize + 3];
+      
+      // Extension length is in 32-bit (4-byte) words
+      const extensionSize = this.extension_length_ * 4;
+      
+      // Check if packet is large enough to contain the extension data
+      if (buffer.length < headerSize + 4 + extensionSize) {
+        return false;
+      }
+
+      // Store extension value
+      this.extension_value_ = new Uint8Array(extensionSize);
+      this.extension_value_.set(buffer.subarray(headerSize + 4, headerSize + 4 + extensionSize));
+      
+      // Update header size to include extension
+      headerSize += 4 + extensionSize;
+    }
+
+    // Calculate payload size considering padding
+    let payloadSize = buffer.length - headerSize;
+    
+    if (this.padding_ && payloadSize > 0) {
+      this.padding_size_ = buffer[buffer.length - 1];
+      
+      // Validate padding size
+      if (this.padding_size_ === 0 || this.padding_size_ > payloadSize) {
+        return false;
+      }
+      
+      payloadSize -= this.padding_size_;
+    } else {
+      this.padding_size_ = 0;
+    }
+
+    // Extract payload
+    if (payloadSize > 0) {
+      this.payload_ = new Uint8Array(payloadSize);
+      this.payload_.set(buffer.subarray(headerSize, headerSize + payloadSize));
+      this.payload_size_ = payloadSize;
+    }
+
+    return true;
+  }
+
+  // Getters
+  getPayload() { return this.payload_; }
+  getPayloadSize() { return this.payload_size_; }
+  getSequenceNumber() { return this.sequence_number_; }
+  getTimestamp() { return this.timestamp_; }
+  getSSRC() { return this.ssrc_; }
+  getPayloadType() { return this.payload_type_; }
+  getMarker() { return this.marker_; }
+  getVersion() { return this.version_; }
+  getPadding() { return this.padding_; }
+  getExtension() { return this.extension_; }
+  getCSRCCount() { return this.csrc_count_; }
+  getExtensionHeaderID() { return this.extension_header_id_; }
+  getExtensionLength() { return this.extension_length_; }
+  getExtensionHeaderValue() { return this.extension_value_; }
+}
+
+/**
+ * H264Packet represents the H264 header that is stored in the payload of an RTP Packet
+ */
+class H264Packet {
+  constructor() {
+    this.is_avc_ = false;
+    this.fua_buffer_ = new Uint8Array(0);
+  }
+
+  /**
+   * Set if using AVC format rather than Annex B format
+   * @param {boolean} isAvc 
+   */
+  setAVC(isAvc) {
+    this.is_avc_ = isAvc;
+  }
+
+  /**
+   * Check if using AVC format
+   * @returns {boolean}
+   */
+  isAVC() {
+    return this.is_avc_;
+  }
+
+  /**
+   * Unmarshal parses the passed byte array and stores the result in the H264Packet
+   * @param {Uint8Array} payload 
+   * @param {Uint8Array} outputPayload - Output buffer to store the result
+   * @returns {number} - Error code
+   */
+  unmarshal(payload, outputPayload) {
+    if (!payload || payload.length === 0) {
+      return H264_PACKET_ERROR_NIL_PACKET;
+    }
+    
+    return this.parseBody(payload, outputPayload);
+  }
+
+  /**
+   * IsPartitionHead checks if this is a head of the H264 partition
+   * @param {Uint8Array} payload 
+   * @returns {boolean}
+   */
+  static isPartitionHead(payload) {
+    if (payload.length < 2) {
+      return false;
+    }
+    
+    const naluType = payload[0] & NALU_TYPE_BITMASK;
+    
+    if (naluType === FUA_NALU_TYPE || naluType === FUB_NALU_TYPE) {
+      return (payload[1] & FU_START_BITMASK) !== 0;
+    }
+    
+    return true;
+  }
+
+  /**
+   * Checks if the packet passed in has the marker bit set
+   * indicating the end of a packet sequence
+   * @param {boolean} rtpPacketMarkerBit 
+   * @returns {boolean}
+   */
+  static isDetectedFinalPacketInSequence(rtpPacketMarkerBit) {
+    return rtpPacketMarkerBit;
+  }
+
+  /**
+   * Helper method to package NALUs
+   * @param {Array} buffer - Buffer to append to
+   * @param {Uint8Array} nalu - NALU data
+   */
+  doPackaging(buffer, nalu) {
+    if (this.is_avc_) {
+      // Add 4-byte length prefix for AVC format
+      const length = nalu.length;
+      buffer.push((length >> 24) & 0xFF);
+      buffer.push((length >> 16) & 0xFF);
+      buffer.push((length >> 8) & 0xFF);
+      buffer.push(length & 0xFF);
+      
+      // Append NALU
+      for (let i = 0; i < nalu.length; i++) {
+        buffer.push(nalu[i]);
+      }
+    } else {
+      // Use Annex B format with start code
+      for (let i = 0; i < ANNEXB_NALU_START_CODE.length; i++) {
+        buffer.push(ANNEXB_NALU_START_CODE[i]);
+      }
+      
+      for (let i = 0; i < nalu.length; i++) {
+        buffer.push(nalu[i]);
+      }
+    }
+  }
+
+  /**
+ * Parse the H264 payload
+ * @param {Uint8Array} payload 
+ * @param {Uint8Array} outputPayload - Output buffer to store the result
+ * @returns {number} - Error code
+ */
+parseBody(payload, outputPayload) {
+  if (payload.length < 1) {
+    return H264_PACKET_ERROR_SHORT_PACKET;
+  }
+  
+  // Clear the output array
+  outputPayload.length = 0;
+  
+  // Get NALU type
+  const naluType = payload[0] & NALU_TYPE_BITMASK;
+  
+  // Handle based on NALU type
+  switch (naluType) {
+    case 1:  // Coded slice of a non-IDR picture
+    case 2:  // Coded slice data partition A
+    case 3:  // Coded slice data partition B
+    case 4:  // Coded slice data partition C
+    case 5:  // Coded slice of an IDR picture
+    case 6:  // Supplemental enhancement information
+    case 7:  // Sequence parameter set
+    case 8:  // Picture parameter set
+    case 9:  // Access unit delimiter
+    case 10: // End of sequence
+    case 11: // End of stream
+    case 12: // Filler data
+    case 19: // Auxiliary coded picture
+    case 20: // Extension
+    case 21: // Depth map
+    case 22: // Reserved
+    case 23: // Reserved
+      // Validate minimum NALU length for specific types
+      if ((naluType === 7 || naluType === 8) && payload.length < 4) {
+        console.log(`Dropping frame: SPS/PPS NALU too short (type ${naluType}, length ${payload.length})`);
+        return H264_PACKET_ERROR_SHORT_PACKET;
+      }
+      
+      // Single NALU - just package it
+      this.doPackaging(outputPayload, payload);
+      return H264_PACKET_OK;
+      
+    case STAPA_NALU_TYPE: {
+      // STAP-A (Single-time aggregation packet)
+      let currentOffset = STAPA_HEADER_SIZE;
+      let validNaluFound = false;
+      
+      while (currentOffset < payload.length) {
+        // Ensure we have enough bytes for the NALU length
+        if (currentOffset + STAPA_NALU_LENGTH_SIZE > payload.length) {
+          if (!validNaluFound) {
+            console.log("Dropping frame: STAP-A packet with no valid NALUs");
+            return H264_PACKET_ERROR_SHORT_PACKET;
+          }
+          break;
+        }
+        
+        // Get NALU size (16-bit big endian)
+        const naluSize = (payload[currentOffset] << 8) | payload[currentOffset + 1];
+        currentOffset += STAPA_NALU_LENGTH_SIZE;
+        
+        // Validate NALU size
+        if (naluSize === 0 || currentOffset + naluSize > payload.length) {
+          console.log(`Dropping frame: STAP-A contains invalid NALU size (${naluSize})`);
+          if (!validNaluFound) {
+            return H264_PACKET_ERROR_SHORT_PACKET;
+          }
+          break;
+        }
+        
+        // Package this NALU
+        this.doPackaging(outputPayload, payload.subarray(currentOffset, currentOffset + naluSize));
+        validNaluFound = true;
+        
+        // Move to next NALU
+        currentOffset += naluSize;
+      }
+      
+      return H264_PACKET_OK;
+    }
+      
+    case FUA_NALU_TYPE: {
+      // Fragmentation Units A (FU-A)
+      if (payload.length < FUA_HEADER_SIZE) {
+        console.log("Dropping frame: FU-A packet too short");
+        return H264_PACKET_ERROR_SHORT_PACKET;
+      }
+      
+      // Check for valid FU header
+      const fuFlags = payload[1];
+      const isStart = (fuFlags & FU_START_BITMASK) !== 0;
+      const isEnd = (fuFlags & FU_END_BITMASK) !== 0;
+      const fragmentedNaluType = fuFlags & NALU_TYPE_BITMASK;
+      
+      // Validate the fragmented NALU type
+      if (fragmentedNaluType > 23) {
+        console.log(`Dropping frame: FU-A with invalid NALU type (${fragmentedNaluType})`);
+        // Reset fragment buffer to prevent corrupted frames
+        this.fua_buffer_ = new Uint8Array(0);
+        return H264_PACKET_ERROR_UNHANDLED_NALU_TYPE;
+      }
+      
+      // Handle start flag - should reset buffer
+      if (isStart) {
+        // If we receive a start flag but already have data, something went wrong
+        // with previous fragments (lost packets) - reset buffer
+        if (this.fua_buffer_.length > 0) {
+          console.log("Dropping frame: New FU-A start flag received before end of previous frame");
+          this.fua_buffer_ = new Uint8Array(0);
+        }
+      } else if (this.fua_buffer_.length === 0) {
+        // Non-start fragment without prior data, missing start fragment
+        console.log("Dropping frame: FU-A continuation received without start fragment");
+        return H264_PACKET_ERROR_SHORT_PACKET;
+      }
+      
+      // Set a maximum buffer size to prevent memory issues from corrupted streams
+      const MAX_FUA_BUFFER_SIZE = 1024 * 1024; // 1MB limit
+      if (this.fua_buffer_.length + payload.length > MAX_FUA_BUFFER_SIZE) {
+        console.log("Dropping frame: FU-A buffer size exceeded maximum allowed");
+        this.fua_buffer_ = new Uint8Array(0);
+        return H264_PACKET_ERROR_SHORT_PACKET;
+      }
+      
+      // Add to fragmentation buffer
+      const newBuffer = new Uint8Array(this.fua_buffer_.length + payload.length - FUA_HEADER_SIZE);
+      newBuffer.set(this.fua_buffer_);
+      newBuffer.set(payload.subarray(FUA_HEADER_SIZE), this.fua_buffer_.length);
+      this.fua_buffer_ = newBuffer;
+      
+      // Check if this is the end of the fragmented packet
+      if (isEnd) {
+        // Reconstruct original NALU
+        const naluRefIdc = payload[0] & NALU_REF_IDC_BITMASK;
+        
+        // Create the original NALU header
+        const completeNalu = [];
+        completeNalu.push(naluRefIdc | fragmentedNaluType);
+        
+        // Add the FU-A data
+        for (let i = 0; i < this.fua_buffer_.length; i++) {
+          completeNalu.push(this.fua_buffer_[i]);
+        }
+        
+        // Package the complete NALU
+        this.doPackaging(outputPayload, new Uint8Array(completeNalu));
+        
+        // Clear buffer for next fragmented packet
+        this.fua_buffer_ = new Uint8Array(0);
+        return H264_PACKET_OK;
+      }
+      
+      // Not the end fragment yet, return empty
+      return H264_PACKET_OK;
+    }
+      
+    default:
+      console.log(`Dropping frame: Unhandled NALU type (${naluType})`);
+      return H264_PACKET_ERROR_UNHANDLED_NALU_TYPE;
+   }
+}
+}
+
+/**
+ * H264Depacketizer depacketizes a H264 RTP payload
+ */
+class H264Depacketizer {
+  constructor() {
+    this.packet_ = new H264Packet();
+  }
+
+  /**
+   * Set if using AVC format rather than Annex B format
+   * @param {boolean} isAvc 
+   */
+  setAVC(isAvc) {
+    this.packet_.setAVC(isAvc);
+  }
+
+  /**
+   * Check if using AVC format
+   * @returns {boolean}
+   */
+  isAVC() {
+    return this.packet_.isAVC();
+  }
+
+  /**
+   * Unmarshal parses the RTP payload and returns H264 media
+   * @param {Uint8Array} packet 
+   * @param {Array} payload - Output array to store the result
+   * @returns {boolean} - Success or failure
+   */
+  unmarshal(packet, payload) {
+    if (!packet || packet.length === 0 || !payload) {
+      return false;
+    }
+    
+    const err = this.packet_.unmarshal(packet, payload);
+    if (err !== H264_PACKET_OK) {
+      return false;
+    }
+    
+    return true;
+  }
+
+  /**
+   * IsPartitionHead checks if the packet is at the beginning of a partition
+   * @param {Uint8Array} payload 
+   * @returns {boolean}
+   */
+  isPartitionHead(payload) {
+    return H264Packet.isPartitionHead(payload);
+  }
+
+  /**
+   * IsPartitionTail checks if the packet is at the end of a partition
+   * @param {boolean} marker 
+   * @param {Uint8Array} payload 
+   * @returns {boolean}
+   */
+  isPartitionTail(marker, payload) {
+    // For H264, the marker bit indicates the last packet of a frame
+    return marker;
+  }
+
+  /**
+   * IsKeyFrame checks if the packet is a keyframe
+   * @param {Uint8Array} payload 
+   * @returns {boolean}
+   */
+  isKeyFrame(payload) {
+    if (payload.length < 1) {
+      return false;
+    }
+    
+    // Check if NALU type is 5 (IDR picture) or if it's a STAP-A (24) that may contain an IDR
+    const naluType = payload[0] & NALU_TYPE_BITMASK;
+    
+    if (naluType === 5) {
+      return true;
+    }
+    
+    // Check for IDR frame inside STAP-A
+    if (naluType === STAPA_NALU_TYPE && payload.length >= 3) {
+      let currentOffset = STAPA_HEADER_SIZE;
+      
+      while (currentOffset + STAPA_NALU_LENGTH_SIZE < payload.length) {
+        // Get NALU size
+        const naluSize = (payload[currentOffset] << 8) | payload[currentOffset + 1];
+        currentOffset += STAPA_NALU_LENGTH_SIZE;
+        
+        // Check for IDR NALU type
+        if (currentOffset < payload.length && (payload[currentOffset] & NALU_TYPE_BITMASK) === 5) {
+          return true;
+        }
+        
+        // Move to next NALU
+        currentOffset += naluSize;
+      }
+    }
+    
+    // For FU-A, check if it's the first fragment of an IDR frame
+    if (naluType === FUA_NALU_TYPE && payload.length >= 2) {
+      const isStart = (payload[1] & FU_START_BITMASK) !== 0;
+      const originalNaluType = payload[1] & NALU_TYPE_BITMASK;
+      
+      if (isStart && originalNaluType === 5) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
+}
+
+/**
+ * H264Payloader payloads H264 packets
+ */
+class H264Payloader {
+  constructor() {
+    this.is_avc_ = false;
+    this.disable_stapa_ = false;
+    this.sps_nalu_ = new Uint8Array(0);
+    this.pps_nalu_ = new Uint8Array(0);
+  }
+
+  /**
+   * Set if using AVC format rather than Annex B format
+   * @param {boolean} isAvc 
+   */
+  setAVC(isAvc) {
+    this.is_avc_ = isAvc;
+  }
+
+  /**
+   * Check if using AVC format
+   * @returns {boolean}
+   */
+  isAVC() {
+    return this.is_avc_;
+  }
+
+  /**
+   * Enable or disable STAP-A packets for aggregating NALUs
+   * @param {boolean} disable 
+   */
+  disableSTAPA(disable) {
+    this.disable_stapa_ = disable;
+  }
+
+  /**
+   * Check if STAP-A is disabled
+   * @returns {boolean}
+   */
+  isSTAPADisabled() {
+    return this.disable_stapa_;
+  }
+
+  /**
+   * Sets the SPS (Sequence Parameter Set) NALU
+   * @param {Uint8Array} nalu 
+   */
+  setSPS(nalu) {
+    this.sps_nalu_ = new Uint8Array(0);
+    if (nalu && nalu.length > 0) {
+      this.sps_nalu_ = new Uint8Array(nalu);
+    }
+  }
+
+  /**
+   * Sets the PPS (Picture Parameter Set) NALU
+   * @param {Uint8Array} nalu 
+   */
+  setPPS(nalu) {
+    this.pps_nalu_ = new Uint8Array(0);
+    if (nalu && nalu.length > 0) {
+      this.pps_nalu_ = new Uint8Array(nalu);
+    }
+  }
+
+  /**
+   * Clear stored SPS/PPS NALUs
+   */
+  clearSPSPPS() {
+    this.sps_nalu_ = new Uint8Array(0);
+    this.pps_nalu_ = new Uint8Array(0);
+  }
+
+  /**
+   * Create FU-A packets for large NALUs
+   * @param {number} mtu - Maximum transmission unit size
+   * @param {Uint8Array} nalu - NALU data
+   * @returns {Array<Uint8Array>} - Array of packet buffers
+   */
+  createFUAPackets(mtu, nalu) {
+    const packets = [];
+    
+    if (nalu.length <= 1) {
+      return packets;  // Invalid NALU
+    }
+    
+    // The FU-A header size
+    const fuaHeaderSize = 2;
+    
+    // The first byte of the NALU (containing type)
+    const naluHeader = nalu[0];
+    
+    // NALU type and NRI values
+    const naluType = naluHeader & NALU_TYPE_BITMASK;
+    const naluRefIdc = naluHeader & NALU_REF_IDC_BITMASK;
+    
+    // Maximum fragment size
+    const maxFragmentSize = mtu - fuaHeaderSize;
+    
+    // Skip the first byte of the NALU (we'll reconstruct it in the FU-A packets)
+    let dataRemaining = nalu.length - 1;
+    let dataIndex = 1;
+    
+    // Create FU-A packets until we've sent all the data
+    let firstFragment = true;
+    
+    while (dataRemaining > 0) {
+      // Size of current fragment
+      const currentFragmentSize = Math.min(maxFragmentSize, dataRemaining);
+      
+      // Create packet for this fragment
+      const packet = new Uint8Array(fuaHeaderSize + currentFragmentSize);
+      
+      // FU indicator - uses the original NALU NRI value but with FU-A type (28)
+      packet[0] = naluRefIdc | FUA_NALU_TYPE;
+      
+      // FU header - contains original NALU type and start/end markers
+      packet[1] = naluType;  // Original NALU type
+      
+      if (firstFragment) {
+        packet[1] |= FU_START_BITMASK;  // Start bit
+        firstFragment = false;
+      }
+      
+      if (dataRemaining === currentFragmentSize) {
+        packet[1] |= FU_END_BITMASK;  // End bit
+      }
+      
+      // Copy the fragment data
+      packet.set(nalu.subarray(dataIndex, dataIndex + currentFragmentSize), fuaHeaderSize);
+      
+      packets.push(packet);
+      
+      dataRemaining -= currentFragmentSize;
+      dataIndex += currentFragmentSize;
+    }
+    
+    return packets;
+  }
+
+  /**
+   * Process H264 stream and extract NALUs
+   * @param {Uint8Array} payload - H264 stream
+   * @param {Array<Uint8Array>} payloads - Output array to store packets
+   * @param {number} mtu - Maximum transmission unit size
+   */
+  emitNALUs(payload, payloads, mtu) {
+    // First, try to find a 3-byte or 4-byte start code
+    let start = 0;
+    
+    while (start < payload.length) {
+      // Find the next start code
+      let nextStart = payload.length;
+      
+      // Look for 3-byte or 4-byte start code
+      for (let i = start + 3; i < payload.length; i++) {
+        if (i + 2 < payload.length && 
+            payload[i] === 0 && payload[i+1] === 0 && payload[i+2] === 1) {
+          nextStart = i;
+          break;
+        }
+        
+        // Also check for 4-byte start code
+        if (i + 3 < payload.length &&
+            payload[i-1] === 0 && payload[i] === 0 && payload[i+1] === 0 && payload[i+2] === 1) {
+          nextStart = i - 1;
+          break;
+        }
+      }
+      
+      // Determine the offset from the start code to the actual NALU
+      let offset = 3;  // Default for 3-byte start code
+      
+      // Check if we have a 3-byte or 4-byte start code
+      if (start + 3 < payload.length && 
+          payload[start] === 0 && payload[start+1] === 0 && 
+          payload[start+2] === 0 && payload[start+3] === 1) {
+        offset = 4;  // 4-byte start code
+      } else if (start + 2 < payload.length &&
+                payload[start] === 0 && payload[start+1] === 0 && payload[start+2] === 1) {
+        offset = 3;  // 3-byte start code
+      } else if (start === 0) {
+        // No start code at the beginning, treat the entire buffer as one NALU
+        offset = 0;
+      }
+      
+      // Extract the NALU from start+offset to nextStart
+      const nalu = payload.subarray(start + offset, nextStart);
+      
+      if (nalu.length > 0) {
+        // Check NALU type
+        const naluType = nalu[0] & NALU_TYPE_BITMASK;
+        
+        // Skip AUD and filler NALUs
+        if (naluType === AUD_NALU_TYPE || naluType === FILLER_NALU_TYPE) {
+          // Skip this NALU
+        } 
+        // Store SPS/PPS if not disabled
+        else if (!this.disable_stapa_ && naluType === SPS_NALU_TYPE) {
+          this.setSPS(nalu);
+        }
+        else if (!this.disable_stapa_ && naluType === PPS_NALU_TYPE) {
+          this.setPPS(nalu);
+        } 
+        // For other NALUs, check if we need to create a STAP-A packet with SPS/PPS
+        else if (!this.disable_stapa_ && this.sps_nalu_.length > 0 && this.pps_nalu_.length > 0) {
+          // Calculate size of a STAP-A packet with SPS+PPS+current NALU
+          const stapaSize = 1 +  // STAP-A header
+                         2 + this.sps_nalu_.length +  // Size + SPS
+                         2 + this.pps_nalu_.length +  // Size + PPS
+                         2 + nalu.length;             // Size + current NALU
+                          
+          if (stapaSize <= mtu) {
+            // We can fit SPS+PPS+NALU in one STAP-A packet
+            const stapaPacket = new Uint8Array(stapaSize);
+            
+            // STAP-A header
+            stapaPacket[0] = 0x78;  // STAP-A NALU type (24) + NRI bits
+            
+            // Add SPS size and data
+            let offset = 1;
+            stapaPacket[offset++] = (this.sps_nalu_.length >> 8) & 0xFF;
+            stapaPacket[offset++] = this.sps_nalu_.length & 0xFF;
+            stapaPacket.set(this.sps_nalu_, offset);
+            offset += this.sps_nalu_.length;
+            
+            // Add PPS size and data
+            stapaPacket[offset++] = (this.pps_nalu_.length >> 8) & 0xFF;
+            stapaPacket[offset++] = this.pps_nalu_.length & 0xFF;
+            stapaPacket.set(this.pps_nalu_, offset);
+            offset += this.pps_nalu_.length;
+            
+            // Add current NALU size and data
+            stapaPacket[offset++] = (nalu.length >> 8) & 0xFF;
+            stapaPacket[offset++] = nalu.length & 0xFF;
+            stapaPacket.set(nalu, offset);
+            
+            payloads.push(stapaPacket);
+            
+            // Clear SPS/PPS after use
+            this.clearSPSPPS();
+            
+            // Skip to the next NALU
+            start = nextStart;
+            continue;
+          }
+        }
+        
+        // If the NALU fits in a single packet, send it as is
+        if (nalu.length <= mtu) {
+          payloads.push(new Uint8Array(nalu));
+        } else {
+          // NALU is too big, fragment it using FU-A
+          const fragments = this.createFUAPackets(mtu, nalu);
+          payloads.push(...fragments);
+        }
+      }
+      
+      // Move to next NALU
+      start = nextStart;
+    }
+  }
+
+  /**
+   * Payload fragments a H264 packet across one or more byte arrays
+   * @param {number} mtu - Maximum transmission unit
+   * @param {Uint8Array} payload - H264 stream
+   * @returns {Array<Uint8Array>} - Array of packet buffers
+   */
+  payload(mtu, payload) {
+    const payloads = [];
+    
+    if (!payload || payload.length === 0) {
+      return payloads;
+    }
+    
+    // Process the H264 stream and emit NALUs
+    this.emitNALUs(payload, payloads, mtu);
+    
+    return payloads;
+  }
+}
+
+
+
+
+
+// Example usage with repair strategy
+let lastSPS = null;
+let lastPPS = null;
+
+
+
+
+
+
+// WebTransport H264 Player
+// This script connects to a WebTransport server, reads RTP datagrams,
+// depacketizes H264 frames, decodes them, and renders to a canvas
+
+// WebTransport
+let transport = null;
+let datagramReader = null;
+
+// Decoder
+let decoder = null;
+let frameCounter = 0;
+let decoderResets = 0;
+let isDecoderReady = false;
+
+// Error tracking
+let consecutiveErrors = 0;
+const MAX_CONSECUTIVE_ERRORS = 5;
+let lastErrorTime = 0;
+const ERROR_RESET_INTERVAL = 5000; // 5 seconds
+
+// Canvas elements
+let canvas = null;
+let ctx = null;
+
+// Constants for RTP/H264
+const MTU = 1200; // Maximum Transmission Unit size
+const DEFAULT_URL = "https://opengit.ai/webtransport";
+const KEY_FRAME_INTERVAL = 5000; // Request keyframe every 5 seconds
+
+// Initialize the application
+function initialize() {
+  // Set up canvas
+  canvas = document.getElementById('videoCanvas');
+  if (!canvas) {
+    canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 480;
+    canvas.id = 'videoCanvas';
+    document.body.appendChild(canvas);
+  }
+  ctx = canvas.getContext('2d');
+  
+  // Set up status display
+  setupStatusDisplay();
+  
+  // Connect to server
+  connectToServer();
+}
+
+function setupStatusDisplay() {
+  let statusElement = document.getElementById('statusDisplay');
+  if (!statusElement) {
+    statusElement = document.createElement('div');
+    statusElement.id = 'statusDisplay';
+    statusElement.style.position = 'absolute';
+    statusElement.style.top = '10px';
+    statusElement.style.left = '10px';
+    statusElement.style.backgroundColor = 'rgba(0, 0, 0, 0.5)';
+    statusElement.style.color = 'white';
+    statusElement.style.padding = '5px';
+    statusElement.style.fontFamily = 'monospace';
+    document.body.appendChild(statusElement);
+  }
+  
+  // Update status periodically
+  setInterval(() => {
+    statusElement.innerHTML = `Frames: ${frameCounter} | Decoder Resets: ${decoderResets}`;
+  }, 1000);
+}
+
+async function connectToServer() {
+  try {
+    // Close existing transport if any
+    if (transport) {
+      try {
+        await closeDatagramReader();
+        await transport.close();
+      } catch (e) {
+        console.log("Error closing existing transport:", e);
+      }
+    }
+    
+    // Create WebTransport session
+    transport = new WebTransport("https://opengit.ai/stream");
+    
+    // Handle connection events
+    transport.closed.then(() => {
+      console.log("Connection closed normally");
+      updateStatus("Connection closed");
+    }).catch((error) => {
+      console.log(`Connection closed with error: ${error}`);
+      updateStatus(`Connection error: ${error}`);
+    });
+    
+    // Wait for connection to be established
+    await transport.ready;
+    console.log("Connected successfully!");
+    updateStatus("Connected");
+    
+    // Initialize the decoder
+    initDecoder();
+    
+    // Start receiving datagrams
+    receiveDatagrams();
+  } catch (error) {
+    console.log(`Connection failed: ${error}`);
+    updateStatus(`Connection failed: ${error}`);
+    
+    // Try to reconnect after a delay
+    setTimeout(connectToServer, 5000);
+  }
+}
+
+function updateStatus(message) {
+  const statusElement = document.getElementById('statusDisplay');
+  if (statusElement) {
+    statusElement.innerHTML = message;
+  }
+}
+
+// Safely close the datagram reader
+async function closeDatagramReader() {
+  if (datagramReader) {
+    try {
+      await datagramReader.cancel();
+      datagramReader = null;
+    } catch (e) {
+      console.log("Error closing datagram reader:", e);
+    }
+  }
+}
+
+// Initialize the H264 video decoder
+function initDecoder() {
+  // Check if VideoDecoder is available
+  if (!('VideoDecoder' in window)) {
+    console.error('WebCodecs API is not supported in this browser');
+    updateStatus('WebCodecs not supported');
+    return;
+  }
+
+  // Clean up existing decoder if there is one
+  if (decoder) {
+    try {
+      if (decoder.state !== "closed") {
+        decoder.close();
+      }
+    } catch (e) {
+      console.log("Error closing existing decoder:", e);
+    }
+  }
+  
+  // Configure the video decoder for H264 Baseline profile
+  const config = {
+    codec: "avc1.42001E", // H.264 Baseline profile level 3.0
+    optimizeForLatency: true,
+    hardwareAcceleration: "prefer-hardware"
+  };
+  
+  // Handle decoded frames
+  const handleVideoFrame = (frame) => {
+    frameCounter++;
+    consecutiveErrors = 0; // Reset error counter on successful frame
+    
+    // Resize canvas if needed
+    if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+      canvas.width = frame.displayWidth;
+      canvas.height = frame.displayHeight;
+    }
+    
+    // Draw the frame on canvas
+    ctx.drawImage(frame, 0, 0);
+    
+    // Release the frame
+    frame.close();
+  };
+  
+  // Handle decoder errors
+  const handleError = (error) => {
+    const currentTime = Date.now();
+    console.log(`Decoder error: ${error}`);
+    
+    // Reset error counter if it's been a while since the last error
+    if (currentTime - lastErrorTime > ERROR_RESET_INTERVAL) {
+      consecutiveErrors = 0;
+    }
+    
+    consecutiveErrors++;
+    lastErrorTime = currentTime;
+    
+    // If we've had too many errors in a row, reset the decoder
+    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+      console.log("Too many consecutive errors, recreating decoder");
+      isDecoderReady = false;
+      
+      // Delay decoder recreation to avoid thrashing
+      setTimeout(() => {
+        decoderResets++;
+        initDecoder();
+      }, 1000);
+    }
+  };
+  
+  // Create the decoder
+  try {
+    decoder = new VideoDecoder({
+      output: handleVideoFrame,
+      error: handleError
+    });
+    
+    // Configure the decoder
+    decoder.configure(config);
+    isDecoderReady = true;
+    
+    console.log("Video decoder initialized");
+  } catch (e) {
+    console.error("Failed to create decoder:", e);
+    isDecoderReady = false;
+    
+    // Try to recreate the decoder after a delay
+    setTimeout(() => {
+      decoderResets++;
+      initDecoder();
+    }, 2000);
+  }
+}
+
+// Receive and process WebTransport datagrams
+async function receiveDatagrams() {
+  // First close any existing reader to prevent locking issues
+  await closeDatagramReader();
+  
+  try {
+    // Get the datagram reader
+    datagramReader = transport.datagrams.readable.getReader();
+    
+    const rtpPacket = new RTPPacket();
+    const h264Depacketizer = new H264Depacketizer();
+    
+    // Set depacketizer to Annex B format
+    h264Depacketizer.setAVC(false);
+    
+    // For frame tracking
+    let lastTimestamp = null;
+    let frameBuffer = [];
+    let lastKeyFrameTime = 0;
+    
+    console.log("Started receiving datagrams");
+    
+    while (true) {
+      const { value, done } = await datagramReader.read();
+      
+      if (done) {
+        console.log("Datagram stream closed");
+        break;
+      }
+      
+      if (value) {
+        // Process the received datagram as an RTP packet
+        try {
+          if (rtpPacket.unmarshal(value)) {
+            // Get RTP data
+            const payload = rtpPacket.getPayload();
+            const timestamp = rtpPacket.getTimestamp();
+            const marker = rtpPacket.getMarker();
+            
+            if (!payload || payload.length === 0) {
+              continue;
+            }
+            
+            // Check if this is a new frame based on timestamp
+            if (lastTimestamp !== null && timestamp !== lastTimestamp) {
+              // Process the previous frame if we have data
+              if (frameBuffer.length > 0) {
+                processFramev2(frameBuffer);
+                frameBuffer = [];
+              }
+            }
+            
+            // Store the timestamp
+            lastTimestamp = timestamp;
+            
+            // Depacketize the H264 payload
+            const h264Output = [];
+            if (h264Depacketizer.unmarshal(payload, h264Output)) {
+              // If we have depacketized data, add it to the frame buffer
+              if (h264Output.length > 0) {
+                // Add this data to the frame buffer
+                frameBuffer.push(...h264Output);
+                
+                // If this packet has the marker bit set, it's the end of a frame
+                if (marker) {
+                  processFramev2(frameBuffer);
+                  frameBuffer = [];
+                }
+              }
+            }
+            
+            // Check if we need to request a keyframe due to errors or timeout
+            const currentTime = Date.now();
+            if (currentTime - lastKeyFrameTime > KEY_FRAME_INTERVAL || consecutiveErrors > 2) {
+              // TODO: Implement RTCP feedback to request keyframe
+              lastKeyFrameTime = currentTime;
+            }
+          }
+        } catch (packetError) {
+          console.log(`Error processing packet: ${packetError}`);
+          // Continue processing other packets
+        }
+      }
+    }
+  } catch (error) {
+    console.log(`Error receiving datagrams: ${error}`);
+    
+    // Release the reader
+    await closeDatagramReader();
+    
+    // Try to restart the receiver after a delay
+    setTimeout(() => {
+      if (transport && transport.ready) {
+        receiveDatagrams();
+      }
+    }, 1000);
+  }
+}
+
+// Process a complete frame - separated from datagram processing
+function processFramev2(frameData) {
+  if (!frameData || frameData.length === 0) {
+    return;
+  }
+  
+  // Skip processing if decoder isn't ready
+  if (!decoder || !isDecoderReady) {
+    console.log("Decoder not ready, skipping frame");
+    return;
+  }
+  
+  try {
+    // Convert array to Uint8Array
+    const data = new Uint8Array(frameData);
+    
+    // Determine if this is a keyframe by checking for SPS/PPS NALUs
+    let isKeyFrame = false;
+    for (let i = 0; i < data.length - 4; i++) {
+      // Look for NAL start code
+      if (data[i] === 0 && data[i+1] === 0 && data[i+2] === 0 && data[i+3] === 1) {
+        if (i + 4 < data.length) {
+          // Check NALU type
+          const naluType = data[i+4] & 0x1F;
+          if (naluType === 7 || naluType === 8) { // SPS or PPS
+            isKeyFrame = true;
+            break;
+          }
+        }
+      }
+    }
+    
+    // If decoder state is questionable and this isn't a keyframe, skip it
+    if (consecutiveErrors > 0 && !isKeyFrame) {
+      console.log("Skipping non-keyframe after errors");
+      return;
+    }
+    
+    // Check decoder state before attempting to decode
+    if (!decoder || decoder.state !== "configured") {
+      console.log(`Decoder in wrong state: ${decoder ? decoder.state : 'null'}`);
+      isDecoderReady = false;
+      decoderResets++;
+      initDecoder();
+      return;
+    }
+    
+
+    
+
+      // Create the video chunk
+      const chunk = new EncodedVideoChunk({
+        type: isKeyFrame ? 'key' : 'delta',
+        timestamp: performance.now() * 1000, // Convert to microseconds
+        duration: 33333, // microseconds (e.g., for 30fps)
+        data: data,
+      });
+      
+      // Decode the chunk
+      decoder.decode(chunk);
+
+    
+
+
+  } catch (error) {
+    console.log(`Error processing frame: ${error}`);
+    consecutiveErrors++;
+    
+    // If we've had too many errors in a row, reset the decoder
+    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+      isDecoderReady = false;
+      decoderResets++;
+      initDecoder();
+    }
+  }
+}
+
+// Check decoder health periodically and reset if necessary
+const healthCheckInterval = setInterval(() => {
+  if (decoder && decoder.state !== "configured") {
+    console.log(`Periodic check: decoder in state ${decoder.state}, recreating`);
+    isDecoderReady = false;
+    decoderResets++;
+    initDecoder();
+  }
+}, 33);
+
+// Cleanup function to be called when the application is closed
+function cleanup() {
+  clearInterval(healthCheckInterval);
+  
+  if (datagramReader) {
+    closeDatagramReader();
+  }
+  
+  if (decoder) {
+    try {
+      if (decoder.state !== "closed") {
+        decoder.close();
+      }
+    } catch (e) {
+      console.log("Error closing decoder during cleanup:", e);
+    }
+  }
+  
+  if (transport) {
+    try {
+      transport.close();
+    } catch (e) {
+      console.log("Error closing transport during cleanup:", e);
+    }
+  }
+}
+
+// Clean up on window unload
+window.addEventListener('beforeunload', cleanup);
+
+// Start the application when window loads
+window.onload = initialize;
+</script>
+</body>
+</html>

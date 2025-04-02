@@ -6,22 +6,22 @@
 </h1>
 <h4 align="center">A pure C/C++ implementation of the WebTransport API leveraging QUIC and HTTP/3</h4>
 <p align="center">
-    <a href="https://libwebtransport.example"><img src="https://img.shields.io/badge/libwebTransport-C/C++-blue.svg?longCache=true" alt="libwebTransport" /></a>
+    <a href="https://github.com/deep-neural/libwebtransport"><img src="https://img.shields.io/badge/libwebTransport-C/C++-blue.svg?longCache=true" alt="libwebTransport" /></a>
   <a href="https://datatracker.ietf.org/doc/html/rfc9000"><img src="https://img.shields.io/static/v1?label=RFC&message=9000&color=brightgreen" /></a>
   <a href="https://datatracker.ietf.org/doc/html/rfc9001"><img src="https://img.shields.io/static/v1?label=RFC&message=9001&color=brightgreen" /></a>
   <a href="https://datatracker.ietf.org/doc/html/rfc9002"><img src="https://img.shields.io/static/v1?label=RFC&message=9002&color=brightgreen" /></a>
   <a href="https://datatracker.ietf.org/doc/html/rfc9114"><img src="https://img.shields.io/static/v1?label=RFC&message=9114&color=brightgreen" /></a>
   <br>
-    <a href="https://github.com/cloud-v2/libwebtransport"><img src="https://img.shields.io/static/v1?label=Build&message=Documentation&color=brightgreen" /></a>
+    <a href="https://github.com/deep-neural/libwebtransport"><img src="https://img.shields.io/static/v1?label=Build&message=Documentation&color=brightgreen" /></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-5865F2.svg" alt="License: MIT" /></a>
 </p>
 <br>
 
 ### New Release
 
-libwebTransport v1.0.0 has been released! See the [release notes](https://github.com/libwebtransport/libwebTransport/wiki/Release-libwebTransport@v1.0.0) to learn about new features, enhancements, and breaking changes.
+libwebTransport v1.0.0 has been released! See the [release notes](https://github.com/deep-neural/libwebtransport/) to learn about new features, enhancements, and breaking changes.
 
-If you aren’t ready to upgrade yet, check the [tags](https://github.com/libwebtransport/libwebTransport/tags) for previous stable releases.
+If you aren’t ready to upgrade yet, check the [tags](https://github.com/deep-neural/libwebtransport) for previous stable releases.
 
 We appreciate your feedback! Feel free to open GitHub issues or submit changes to stay updated in development and connect with the maintainers.
 
@@ -143,7 +143,7 @@ See [BUILDING.md](https://github.com/danielv4/libwebtransport/blob/master/BUILDI
 
 ### Contributing
 
-Check out the [contributing guide](https://github.com/libwebtransport/libwebTransport/wiki/Contributing) to join the team of dedicated contributors making this project possible.
+Check out the [contributing guide](https://github.com/deep-neural/libwebtransport/wiki/Contributing) to join the team of dedicated contributors making this project possible.
 
 ### License
 

